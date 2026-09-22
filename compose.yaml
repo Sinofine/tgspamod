@@ -1,0 +1,14 @@
+services:
+  moderator:
+    build: .
+    restart: unless-stopped
+    environment:
+      DATA_DIR: /app/data
+    volumes:
+      - ./.env:/app/.env:ro
+      - ./data:/app/data
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

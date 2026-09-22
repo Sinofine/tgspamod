@@ -1,0 +1,31 @@
+# Local credentials; keep the documented template.
+.env
+.env.*
+!.env.example
+
+# Telegram sessions and runtime databases.
+data/
+*.session*
+*.sqlite3*
+*.db
+*.db-*
+
+# Python environments, build files, and test caches.
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+build/
+dist/
+
+# Editor and operating-system files.
+.idea/
+.vscode/
+.DS_Store
+
+# Generated test output.
+/TEST_RESULTS.txt
