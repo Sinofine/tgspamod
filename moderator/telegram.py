@@ -91,10 +91,10 @@ class Gateway:
             await self.client(functions.channels.EditBannedRequest(chat,types.PeerUser(uid),
                 types.ChatBannedRights(until_date=None)))
 
-    async def validate(self):
-        for chat in self.cfg.chats:
-            permissions = await self.client.get_permissions(chat,self.own_id)
-            if not permissions.is_admin or not permissions.delete_messages or not permissions.ban_users:
-                raise RuntimeError(f'群 {chat} 需要管理员、删除消息、封禁用户权限')
-            if self.cfg.kick_mode == 'ban' and utils.resolve_id(chat)[1] is not types.PeerChannel:
-                raise RuntimeError('KICK_MODE=ban 只支持超级群')
+    async def validate_chat(self, chat, peer):
+        from .bootstrap import GroupPermissionError
+        permissions = await self.client.get_permissions(peer, 'me')
+        if not permissions.is_admin or not permissions.delete_messages or not permissions.ban_users:
+            raise GroupPermissionError('需要管理员、删除消息和封禁用户权限；授权后会自动重试。')
+        if self.cfg.kick_mode == 'ban' and utils.resolve_id(chat)[1] is not types.PeerChannel:
+            raise GroupPermissionError('KICK_MODE=ban 只支持超级群；普通群请使用 kick 并重启。')

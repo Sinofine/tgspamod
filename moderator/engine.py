@@ -11,8 +11,9 @@ def timestamp(date):
     return int(date.timestamp()) if date else int(time.time())
 
 class Engine:
-    def __init__(self, cfg, store, gateway, classifier):
+    def __init__(self, cfg, store, gateway, classifier, is_ready=None):
         self.cfg,self.store,self.tg,self.llm = cfg,store,gateway,classifier
+        self.is_ready = is_ready or (lambda chat: True)
 
     def note(self, chat, uid, action, detail):
         self.store.audit(chat,uid,action,detail)
@@ -168,6 +169,9 @@ class Engine:
             job = self.store.claim(actions)
             if job is None:
                 await asyncio.sleep(0.25)
+                continue
+            if not self.is_ready(job['payload']['chat']):
+                self.store.defer(job,1)
                 continue
             try:
                 await self.execute(job)

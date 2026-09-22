@@ -8,6 +8,7 @@ from pathlib import Path
 import sys
 from telethon import TelegramClient, events
 from moderator.config import Config
+from moderator.bootstrap import ChatBootstrap
 from moderator.engine import Engine
 from moderator.llm import Classifier
 from moderator.store import Store
@@ -22,13 +23,10 @@ async def run(cfg):
     store = Store(cfg.data_dir / 'moderation.sqlite3')
     classifier = Classifier(cfg)
     gateway = Gateway(client,cfg,int(cfg.bot_token.split(':',1)[0]))
-    engine = Engine(cfg,store,gateway,classifier)
+    bootstrap = ChatBootstrap(client,cfg,gateway)
+    engine = Engine(cfg,store,gateway,classifier,is_ready=bootstrap.is_ready)
     async def receive(update):
-        # Persist access hashes along with incoming data, before queueing work.
-        entities = getattr(update, '_entities', {})
-        if entities:
-            client.session.process_entities(list(entities.values()))
-            client.session.save()
+        bootstrap.remember(update)
         await engine.ingest(update)
     client.add_event_handler(receive,events.Raw())
     tasks = []
@@ -37,11 +35,13 @@ async def run(cfg):
         me = await client.get_me()
         if not me.bot or me.id != gateway.own_id:
             raise RuntimeError('当前 session 与 TG_BOT_TOKEN 不匹配，请使用独立 DATA_DIR')
-        await gateway.validate()
-        LOG.info('机器人已启动 id=%s groups=%s dry_run=%s',me.id,len(cfg.chats),cfg.dry_run)
+        await bootstrap.refresh()
+        LOG.info('机器人已连接 id=%s ready_groups=%s/%s dry_run=%s',
+                 me.id,len(bootstrap.ready),len(cfg.chats),cfg.dry_run)
         # Independent action worker cannot get stuck waiting for an LLM semaphore.
         tasks = [asyncio.create_task(engine.worker()) for _ in range(cfg.llm_concurrency)]
         tasks.append(asyncio.create_task(engine.worker(actions=True)))
+        tasks.append(asyncio.create_task(bootstrap.watch()))
         disconnected = asyncio.create_task(client.run_until_disconnected())
         tasks.append(disconnected)
         done,_ = await asyncio.wait(tasks,return_when=asyncio.FIRST_COMPLETED)
@@ -78,6 +78,10 @@ def main():
     os.umask(0o077)
     try:
         cfg = Config.load(args.env)
+    except (ValueError, OSError) as error:
+        LOG.error('配置文件读取/校验失败：%s',error)
+        sys.exit(1)
+    try:
         if args.check_config:
             print('配置校验通过（未验证凭据有效性/模型接口连接）。')
             return
@@ -98,8 +102,7 @@ def main():
     except KeyboardInterrupt:
         pass
     except ValueError as error:
-        # Config errors use field names; never print environment values.
-        LOG.error('配置错误：%s',error)
+        LOG.error('运行时实体/参数解析失败（不是 .env 格式校验错误）；请检查群资料缓存和日志中的任务状态。')
         sys.exit(1)
     except Exception as error:
         LOG.error('启动/运行失败：%s；请检查权限、网络与凭据。',type(error).__name__)

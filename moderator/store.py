@@ -98,6 +98,12 @@ class Store:
             (json.dumps(job['payload'],ensure_ascii=False),job['key'],job['revision']))
         self.db.commit()
 
+    def defer(self, job, delay):
+        # Waiting for group initialization does not consume operation retries.
+        self.db.execute("UPDATE jobs SET status='pending',due=? WHERE key=? AND revision=?",
+                        (time.time()+delay,job['key'],job['revision']))
+        self.db.commit()
+
     def fail(self, job, error, maximum, delay):
         attempts = job['attempts'] + 1
         status = 'failed' if attempts >= maximum else 'pending'

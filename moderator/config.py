@@ -16,6 +16,7 @@ class Config:
     llm_url: str
     llm_key: str = field(repr=False)
     llm_model: str
+    chat_references: dict[int, str] = field(default_factory=dict)
     data_dir: Path = Path('data')
     dry_run: bool = False
     kick_mode: str = 'kick'
@@ -73,6 +74,17 @@ class Config:
             check_unseen=boolean('CHECK_UNSEEN_MEMBERS'), exempt=ids('EXEMPT_USER_IDS'),
             group_policy=os.environ.get('GROUP_POLICY', cls.group_policy), tg_proxy=proxy,
             llm_proxy=os.environ.get('LLM_PROXY_URL') or None)
+        references = json.loads(os.environ.get('TG_CHAT_REFERENCES', '{}'))
+        if not isinstance(references, dict):
+            raise ValueError('TG_CHAT_REFERENCES 必须是群 ID 到 @公开群用户名的 JSON 对象')
+        for key, reference in references.items():
+            try:
+                chat = int(key)
+            except (ValueError, TypeError):
+                raise ValueError('TG_CHAT_REFERENCES 的键必须是数字群 ID') from None
+            if chat not in cfg.chats or not isinstance(reference, str) or not re.fullmatch(r'@[A-Za-z][A-Za-z0-9_]{3,31}', reference):
+                raise ValueError('TG_CHAT_REFERENCES 只接受 TG_CHAT_IDS 中的群 ID 和 @公开群用户名')
+            cfg.chat_references[chat] = reference
         if not re.fullmatch(r'[0-9]+:[A-Za-z0-9_-]+', cfg.bot_token):
             raise ValueError('TG_BOT_TOKEN 格式不正确')
         if cfg.api_id <= 0 or not cfg.chats or any(c >= 0 for c in cfg.chats):

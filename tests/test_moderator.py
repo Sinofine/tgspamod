@@ -193,6 +193,24 @@ class EngineTests(unittest.IsolatedAsyncioTestCase):
         await self.drain()
         self.assertFalse(self.tg.calls)
 
+    async def test_waiting_for_group_does_not_consume_retries(self):
+        await self.join()
+        self.engine.is_ready=lambda chat: False
+        await self.engine.ingest(update(text='广告'))
+        count=len(self.llm.calls)
+        worker=asyncio.create_task(self.engine.worker())
+        await asyncio.sleep(.05)
+        worker.cancel()
+        with self.assertRaises(asyncio.CancelledError): await worker
+        row=self.store.db.execute("SELECT status,attempts FROM jobs WHERE kind='message'").fetchone()
+        self.assertEqual(tuple(row),('pending',0))
+        self.assertEqual(len(self.llm.calls),count)
+        self.assertFalse(self.tg.calls)
+        self.engine.is_ready=lambda chat: True
+        self.store.db.execute("UPDATE jobs SET due=0"); self.store.db.commit()
+        await self.drain()
+        self.assertIn(('ban',42),self.tg.calls)
+
 class LLMTests(unittest.IsolatedAsyncioTestCase):
     async def classify(self,value=None,status=200,config=None,finish='stop'):
         self.request=None
