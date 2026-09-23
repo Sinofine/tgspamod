@@ -29,3 +29,9 @@ dist/
 
 # Generated test output.
 /TEST_RESULTS.txt
+
+# Local runtime data exports and deployment edit backups.
+/data.tar
+/data.tar.*
+/data.zip
+/python-env.nix.bak
