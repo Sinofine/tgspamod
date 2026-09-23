@@ -71,8 +71,35 @@ class Gateway:
     async def profile(self, uid):
         user = await self.user(uid)
         result = await self.client(functions.users.GetFullUserRequest(user))
-        return {'nickname':' '.join(v for v in (user.first_name,user.last_name) if v),
-                'username':user.username or '', 'bio':result.full_user.about or ''}
+        # Prefer the fresh user returned with full info over a cached entity.
+        user = next((u for u in getattr(result, 'users', []) if u.id == uid), user)
+        profile = {'nickname':' '.join(v for v in (user.first_name,user.last_name) if v),
+                   'username':user.username or '', 'bio':result.full_user.about or ''}
+        status = getattr(user, 'emoji_status', None)
+        if isinstance(status, types.EmojiStatus):
+            until = status.until
+            if until is not None:
+                if until.tzinfo is None:
+                    until = until.replace(tzinfo=timezone.utc)
+                if until <= datetime.now(timezone.utc):
+                    return profile
+            documents = await self.client(functions.messages.GetCustomEmojiDocumentsRequest(
+                document_id=[status.document_id]))
+            document = next((d for d in documents if d.id == status.document_id), None)
+            attr = next((a for a in getattr(document, 'attributes', [])
+                         if isinstance(a, types.DocumentAttributeCustomEmoji)), None)
+            if attr is None or isinstance(attr.stickerset, types.InputStickerSetEmpty):
+                raise RuntimeError('Emoji status stickerset unavailable')
+            # Fetch current names: pack owners can rename a set without changing its ID.
+            response = await self.client(functions.messages.GetStickerSetRequest(
+                stickerset=attr.stickerset, hash=0))
+            pack = getattr(response, 'set', None)
+            if pack is None or not isinstance(pack.title, str) or not isinstance(pack.short_name, str):
+                raise RuntimeError('Emoji status stickerset metadata unavailable')
+            if isinstance(attr.stickerset, types.InputStickerSetID) and pack.id != attr.stickerset.id:
+                raise RuntimeError('Emoji status stickerset mismatch')
+            profile['emoji_status_pack'] = {'title':pack.title, 'short_name':pack.short_name}
+        return profile
 
     async def outside(self, chat, uid):
         return not member_present(await self.participant(chat,uid))

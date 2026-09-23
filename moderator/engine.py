@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import json
 import time
 from telethon import types, utils, errors
 from .telegram import content_of, member_present, unreviewable_media
@@ -115,12 +116,21 @@ class Engine:
         p = job['payload']
         if await self.tg.protected(p['chat'],target): return
         if kind == 'external_bot' and (await self.tg.user(target)).bot: return
+        if not self.store.current(job) or not self.valid_epoch(p,target,epoch): return
+        # JSON quoting keeps user-controlled newlines from forging log entries.
+        LOG.info('review_input chat=%s user=%s kind=%s job=%s revision=%s data=%s',
+                 p['chat'],target,kind,job['key'],job['revision'],
+                 json.dumps(data,ensure_ascii=False))
         result = await self.llm.classify(kind,data)
         if not self.store.current(job): return
         if not self.valid_epoch(p,target,epoch): return
         if kind == 'message':
             self.store.mark_checked(p['chat'],target,epoch,p['message'],1 if not result.is_ad else -1)
-        verdict = f'is_ad={result.is_ad}; confidence={result.confidence}; reason={result.reason}'
+        verdict = json.dumps({'kind':kind,'is_ad':result.is_ad,
+                              'confidence':result.confidence,'reason':result.reason,
+                              'evidence':result.evidence},ensure_ascii=False)
+        LOG.info('review_result chat=%s user=%s job=%s revision=%s result=%s',
+                 p['chat'],target,job['key'],job['revision'],verdict)
         self.note(p['chat'],target,'review',verdict)
         if result.is_ad and result.confidence >= self.cfg.threshold:
             if kind == 'message': self.delete_job(p['chat'],p['message'],job)
