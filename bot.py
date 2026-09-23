@@ -36,8 +36,8 @@ async def run(cfg):
         if not me.bot or me.id != gateway.own_id:
             raise RuntimeError('当前 session 与 TG_BOT_TOKEN 不匹配，请使用独立 DATA_DIR')
         await bootstrap.refresh()
-        LOG.info('机器人已连接 id=%s ready_groups=%s/%s dry_run=%s',
-                 me.id,len(bootstrap.ready),len(cfg.chats),cfg.dry_run)
+        LOG.info('机器人已连接 id=%s username=@%s ready_groups=%s/%s dry_run=%s',
+                 me.id,me.username,len(bootstrap.ready),len(cfg.chats),cfg.dry_run)
         # Independent action worker cannot get stuck waiting for an LLM semaphore.
         tasks = [asyncio.create_task(engine.worker()) for _ in range(cfg.llm_concurrency)]
         tasks.append(asyncio.create_task(engine.worker(actions=True)))

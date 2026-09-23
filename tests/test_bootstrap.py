@@ -37,6 +37,8 @@ class OfflineClient(TelegramClient):
         assert user=='me'
         self.permission_calls.append(entity.channel_id)
         return SimpleNamespace(is_admin=self.admin,delete_messages=self.admin,ban_users=self.admin)
+    async def send_message(self,*args,**kwargs):
+        raise AssertionError('Bootstrap must stay silent in chats')
     async def get_dialogs(self,*args,**kwargs):
         raise AssertionError('getDialogs is not a bot API')
 
@@ -57,6 +59,39 @@ class BootstrapTests(unittest.IsolatedAsyncioTestCase):
         self.tmp.cleanup()
     def incoming(self, uid=5100328224):
         return SimpleNamespace(_entities={-1000000000000-uid:channel(uid)})
+    async def test_target_update_without_entities_is_observable(self):
+        update = SimpleNamespace(message=SimpleNamespace(
+            peer_id=types.PeerChannel(5100328224), message='private_text'))
+        with self.assertLogs('moderator', level='INFO') as logs:
+            self.boot.remember(update)
+        self.assertEqual(self.boot.chat_update_count[CHAT], 1)
+        self.assertEqual(self.boot.update_count, 1)
+        self.assertTrue(self.boot.changed.is_set())
+        self.assertFalse(self.boot.is_ready(CHAT))
+        self.assertIn('已收到首个群更新', '\n'.join(logs.output))
+        self.assertNotIn('private_text', '\n'.join(logs.output))
+
+    async def test_normal_message_in_wrong_chat_does_not_wake_bootstrap(self):
+        update = SimpleNamespace(message=SimpleNamespace(
+            peer_id=types.PeerChannel(999), message='hello'))
+        with self.assertNoLogs('moderator'):
+            self.boot.remember(update)
+        self.assertEqual(self.boot.update_count, 1)
+        self.assertEqual(self.boot.chat_update_count, {})
+        self.assertFalse(self.boot.changed.is_set())
+
+    async def test_waiting_status_is_periodic_and_stops_when_ready(self):
+        with patch('moderator.bootstrap.time.monotonic', return_value=self.boot.last_status + 61):
+            with self.assertLogs('moderator', level='WARNING') as logs:
+                self.boot.report_waiting()
+            self.assertIn('该群更新数=0', logs.output[0])
+            with self.assertNoLogs('moderator'):
+                self.boot.report_waiting()
+        self.boot.ready.add(CHAT)
+        with patch('moderator.bootstrap.time.monotonic', return_value=self.boot.last_status + 61):
+            with self.assertNoLogs('moderator'):
+                self.boot.report_waiting()
+
     async def test_original_missing_entity_reproduced(self):
         with self.assertRaisesRegex(ValueError,'Could not find the input entity'):
             await self.client.get_input_entity(CHAT)
@@ -74,7 +109,10 @@ class BootstrapTests(unittest.IsolatedAsyncioTestCase):
     async def test_watch_wakes_on_incoming_update(self):
         await self.boot.refresh()
         watcher=asyncio.create_task(self.boot.watch())
-        self.boot.remember(self.incoming())
+        update = self.incoming()
+        update.message = SimpleNamespace(peer_id=types.PeerChannel(5100328224),
+                                         message='大家好')
+        self.boot.remember(update)
         for _ in range(20):
             if self.boot.is_ready(CHAT): break
             await asyncio.sleep(.01)
