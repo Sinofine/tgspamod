@@ -43,6 +43,23 @@ def content_of(msg):
     return '\n'.join(p for p in parts if p)
 
 
+def reply_of(msg):
+    header = getattr(msg, 'reply_to', None)
+    if not isinstance(header, types.MessageReplyHeader): return None
+    peer = getattr(header, 'reply_to_peer_id', None)
+    external = peer is not None and utils.get_peer_id(peer) != utils.get_peer_id(msg.peer_id)
+    quote = getattr(header, 'quote_text', None) or ''
+    urls = [e.url for e in (getattr(header, 'quote_entities', None) or [])
+            if isinstance(e, types.MessageEntityTextUrl)]
+    origin = getattr(header, 'reply_from', None)
+    names = {key:getattr(origin, key, None) for key in ('from_name','post_author')
+             if getattr(origin, key, None)}
+    if not external and not quote and not urls and not names: return None
+    return {'external':external, 'peer':utils.get_peer_id(peer) if peer else None,
+            'message':getattr(header, 'reply_to_msg_id', None),
+            'quote_text':quote, 'quote_urls':urls, 'origin_labels':names}
+
+
 class Gateway:
     def __init__(self, client, cfg, own_id):
         self.client,self.cfg,self.own_id = client,cfg,own_id
@@ -100,6 +117,20 @@ class Gateway:
                 raise RuntimeError('Emoji status stickerset mismatch')
             profile['emoji_status_pack'] = {'title':pack.title, 'short_name':pack.short_name}
         return profile
+
+    async def reply_text(self, peer, mid):
+        if peer is None or not isinstance(mid, int) or mid <= 0:
+            raise RuntimeError('Reply target reference unavailable')
+        message = await self.client.get_messages(peer, ids=mid)
+        if not isinstance(message, types.Message) or message.id != mid:
+            raise RuntimeError('Reply target message unavailable')
+        if utils.get_peer_id(message.peer_id) != peer:
+            raise RuntimeError('Reply target peer mismatch')
+        # Only this one target; do not recursively follow replies or fetch history.
+        text = content_of(message)
+        if not text:
+            raise RuntimeError('Reply target has no reviewable text')
+        return text
 
     async def outside(self, chat, uid):
         return not member_present(await self.participant(chat,uid))

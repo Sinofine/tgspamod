@@ -3,7 +3,7 @@ import logging
 import json
 import time
 from telethon import types, utils, errors
-from .telegram import content_of, member_present, unreviewable_media
+from .telegram import content_of, member_present, unreviewable_media, reply_of
 
 LOG = logging.getLogger('moderator')
 
@@ -86,7 +86,8 @@ class Engine:
         data = {'chat':chat,'user':uid,'message':msg.id,'text':content_of(msg),
                 'epoch':epoch,'restricted_media':restricted_media,'guest':caller is not None,'caller':caller_id,
                 'via_bot':msg.via_bot_id,'is_bot':is_bot,
-                'edit_stamp':timestamp(msg.edit_date) if msg.edit_date else 0}
+                'edit_stamp':timestamp(msg.edit_date) if msg.edit_date else 0,
+                'reply':reply_of(msg)}
         if caller_id is not None or (msg.via_bot_id and is_bot is not True):
             member = self.store.member(chat,caller_id if caller_id is not None else uid)
             data['caller_epoch'] = member['epoch'] if member else None
@@ -138,6 +139,16 @@ class Engine:
                        'source':job['key'],'source_revision':job['revision']}
             self.store.put(f"kick:{job['key']}:{job['revision']}",'kick',payload)
 
+    async def message_data(self, p):
+        data = {'text':p['text']}
+        reply = p.get('reply')
+        if reply:
+            data['reply_context'] = dict(reply)
+            if reply['external'] and not reply.get('quote_text') and not reply.get('quote_urls'):
+                data['reply_context']['target_text'] = await self.tg.reply_text(
+                    reply.get('peer'),reply.get('message'))
+        return data
+
     async def execute(self, job):
         p,kind = job['payload'],job['kind']
         if kind == 'profile':
@@ -164,10 +175,10 @@ class Engine:
                 self.delete_job(p['chat'],p['message'])
                 target = p['caller'] if p['guest'] else (p['user'] if p['via_bot'] and not is_bot else None)
                 epoch = p.get('caller_epoch')
-                if target and p['text']:
-                    await self.review(job,'external_bot',{'text':p['text']},target,epoch)
-            elif not is_bot and not p.get('restricted_media') and p['epoch'] is not None and self.valid_epoch(p) and p['text']:
-                await self.review(job,'message',{'text':p['text']},p['user'],p['epoch'])
+                if target and (p['text'] or p.get('reply')):
+                    await self.review(job,'external_bot',await self.message_data(p),target,epoch)
+            elif not is_bot and not p.get('restricted_media') and p['epoch'] is not None and self.valid_epoch(p) and (p['text'] or p.get('reply')):
+                await self.review(job,'message',await self.message_data(p),p['user'],p['epoch'])
         elif kind == 'media':
             if not self.store.current(p['source']) or not self.valid_epoch(p): return
             if await self.tg.protected(p['chat'],p['user']): return
