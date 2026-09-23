@@ -22,6 +22,11 @@ class Store:
         CREATE TABLE IF NOT EXISTS audit(
             at REAL,chat INTEGER,user INTEGER,action TEXT,detail TEXT);
         ''')
+        columns = {r['name'] for r in self.db.execute('PRAGMA table_info(messages)')}
+        if 'checked' not in columns:
+            # Legacy slots retain their old eligibility; new slots require review.
+            self.db.execute('ALTER TABLE messages ADD COLUMN checked INTEGER NOT NULL DEFAULT 0')
+            self.db.execute('UPDATE messages SET checked=1')
         self.db.execute("UPDATE jobs SET status='pending' WHERE status='running'")
         self.db.commit()
 
@@ -55,29 +60,57 @@ class Store:
         if self.db.execute('SELECT 1 FROM messages WHERE chat=? AND user=? AND epoch=? AND message=?',
                            (*args,mid)).fetchone(): return epoch
         if edited: return None
-        count = self.db.execute('SELECT count(*) FROM messages WHERE chat=? AND user=? AND epoch=?',args).fetchone()[0]
+        count = self.db.execute('SELECT count(*) FROM messages WHERE chat=? AND user=? AND epoch=? AND checked>=0',args).fetchone()[0]
         if count >= 3: return None
-        self.db.execute('INSERT INTO messages VALUES(?,?,?,?)',(*args,mid))
+        self.db.execute('INSERT INTO messages(chat,user,epoch,message) VALUES(?,?,?,?)',(*args,mid))
         self.db.commit()
         return epoch
+
+    def mark_checked(self, chat, user, epoch, mid, state):
+        self.db.execute('UPDATE messages SET checked=? WHERE chat=? AND user=? AND epoch=? AND message=?',
+                        (state,chat,user,epoch,mid))
+        self.db.commit()
+
+    def media_epoch(self, chat, user, mid, edited, unseen=False):
+        member = self.member(chat,user)
+        if member is None and unseen and not edited:
+            self.join(chat,user,0)
+            member = self.member(chat,user)
+        if not member or not member['active']: return None
+        args = (chat,user,member['epoch'])
+        tracked = self.db.execute('SELECT 1 FROM messages WHERE chat=? AND user=? AND epoch=? AND message=?',
+                                 (*args,mid)).fetchone()
+        passed = self.db.execute('SELECT count(*) FROM messages WHERE chat=? AND user=? AND epoch=? AND checked=1',args).fetchone()[0]
+        if tracked or passed < 3:
+            # Replacing an audited text with a media attachment revokes its pass.
+            self.mark_checked(*args,mid,-1)
+            return member['epoch']
+        return None
+
+    def has_job(self, key):
+        return self.db.execute('SELECT 1 FROM jobs WHERE key=?',(key,)).fetchone() is not None
+
+    def revision(self, key):
+        return self.db.execute('SELECT revision FROM jobs WHERE key=?',(key,)).fetchone()[0]
 
     def put(self, key, kind, payload, replace=False):
         body = json.dumps(payload, ensure_ascii=False, sort_keys=True)
         fingerprint = hashlib.sha256(body.encode()).hexdigest()
         old = self.db.execute('SELECT fingerprint FROM jobs WHERE key=?',(key,)).fetchone()
         if old:
-            if not replace or old['fingerprint'] == fingerprint: return
-            self.db.execute("UPDATE jobs SET payload=?,fingerprint=?,revision=revision+1,status='pending',attempts=0,due=0,error=NULL WHERE key=?",
-                            (body,fingerprint,key))
+            if not replace or old['fingerprint'] == fingerprint: return False
+            self.db.execute("UPDATE jobs SET payload=?,fingerprint=?,kind=?,revision=revision+1,status='pending',attempts=0,due=0,error=NULL WHERE key=?",
+                            (body,fingerprint,kind,key))
         else:
             self.db.execute('INSERT INTO jobs(key,kind,payload,created,fingerprint) VALUES(?,?,?,?,?)',
                             (key,kind,body,time.time(),fingerprint))
         self.db.commit()
+        return True
 
     def claim(self, actions=None):
-        category = "" if actions is None else (" AND kind IN ('delete','kick')" if actions else " AND kind NOT IN ('delete','kick')")
+        category = "" if actions is None else (" AND kind IN ('delete','kick','media')" if actions else " AND kind NOT IN ('delete','kick','media')")
         row = self.db.execute("""SELECT * FROM jobs WHERE status='pending' AND due<=?""" + category + """
-          ORDER BY CASE WHEN kind IN ('delete','kick') THEN 0 ELSE 1 END,created LIMIT 1""",(time.time(),)).fetchone()
+          ORDER BY CASE WHEN kind IN ('delete','kick','media') THEN 0 ELSE 1 END,created LIMIT 1""",(time.time(),)).fetchone()
         if row is None: return None
         self.db.execute("UPDATE jobs SET status='running' WHERE key=?",(row['key'],))
         self.db.commit()

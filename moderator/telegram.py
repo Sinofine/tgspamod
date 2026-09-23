@@ -9,6 +9,13 @@ def member_present(p):
     return True
 
 
+def unreviewable_media(msg):
+    # A normal URL preview is treated as a text link; attached files are not.
+    return (getattr(msg, 'rich_message', None) is not None or
+            (msg.media is not None and not isinstance(msg.media,
+                (types.MessageMediaEmpty, types.MessageMediaWebPage))))
+
+
 def content_of(msg):
     parts = [msg.message or '']
     for entity in msg.entities or []:

@@ -2,7 +2,7 @@ import asyncio
 import logging
 import time
 from telethon import types, utils, errors
-from .telegram import content_of, member_present
+from .telegram import content_of, member_present, unreviewable_media
 
 LOG = logging.getLogger('moderator')
 
@@ -73,18 +73,30 @@ class Engine:
         is_bot = getattr(sender,'bot',None)
         external_candidate = bool(caller or msg.via_bot_id or is_bot)
         epoch = None
-        if not caller and is_bot is not True:
+        restricted_media = False
+        if self.cfg.restrict_newcomer_media and unreviewable_media(msg) and not caller and is_bot is not True:
+            epoch = self.store.media_epoch(chat,uid,msg.id,edited,self.cfg.check_unseen)
+            restricted_media = epoch is not None
+        if not restricted_media and not caller and is_bot is not True:
             epoch = self.store.first_three(chat,uid,msg.id,edited,self.cfg.check_unseen)
         # Unknown sender type must still be resolved, even after probation.
-        if not external_candidate and epoch is None and is_bot is not None: return
+        if not external_candidate and epoch is None and is_bot is not None:
+            if not self.store.has_job(f'message:{chat}:{msg.id}'): return
         data = {'chat':chat,'user':uid,'message':msg.id,'text':content_of(msg),
-                'epoch':epoch,'guest':caller is not None,'caller':caller_id,
+                'epoch':epoch,'restricted_media':restricted_media,'guest':caller is not None,'caller':caller_id,
                 'via_bot':msg.via_bot_id,'is_bot':is_bot,
                 'edit_stamp':timestamp(msg.edit_date) if msg.edit_date else 0}
         if caller_id is not None or (msg.via_bot_id and is_bot is not True):
             member = self.store.member(chat,caller_id if caller_id is not None else uid)
             data['caller_epoch'] = member['epoch'] if member else None
-        self.store.put(f'message:{chat}:{msg.id}','message',data,replace=True)
+        key = f'message:{chat}:{msg.id}'
+        changed = self.store.put(key,'message',data,replace=True)
+        if changed and epoch is not None and not restricted_media:
+            self.store.mark_checked(chat,uid,epoch,msg.id,0)
+        if restricted_media:
+            self.store.put(f'media:{chat}:{msg.id}','media',
+                {'chat':chat,'user':uid,'epoch':epoch,'message':msg.id,
+                 'source':{'key':key,'revision':self.store.revision(key)}},replace=True)
 
     def valid_epoch(self, p, user=None, epoch=None):
         uid = p['user'] if user is None else user
@@ -106,6 +118,8 @@ class Engine:
         result = await self.llm.classify(kind,data)
         if not self.store.current(job): return
         if not self.valid_epoch(p,target,epoch): return
+        if kind == 'message':
+            self.store.mark_checked(p['chat'],target,epoch,p['message'],1 if not result.is_ad else -1)
         verdict = f'is_ad={result.is_ad}; confidence={result.confidence}; reason={result.reason}'
         self.note(p['chat'],target,'review',verdict)
         if result.is_ad and result.confidence >= self.cfg.threshold:
@@ -135,13 +149,22 @@ class Engine:
             source_bot = p['user'] if is_bot else p['via_bot']
             outside = bool(p['guest']) or (source_bot and await self.tg.outside(p['chat'],source_bot))
             if outside:
+                if p['epoch'] is not None and not is_bot:
+                    self.store.mark_checked(p['chat'],p['user'],p['epoch'],p['message'],-1)
                 self.delete_job(p['chat'],p['message'])
                 target = p['caller'] if p['guest'] else (p['user'] if p['via_bot'] and not is_bot else None)
                 epoch = p.get('caller_epoch')
                 if target and p['text']:
                     await self.review(job,'external_bot',{'text':p['text']},target,epoch)
-            elif not is_bot and p['epoch'] is not None and self.valid_epoch(p) and p['text']:
+            elif not is_bot and not p.get('restricted_media') and p['epoch'] is not None and self.valid_epoch(p) and p['text']:
                 await self.review(job,'message',{'text':p['text']},p['user'],p['epoch'])
+        elif kind == 'media':
+            if not self.store.current(p['source']) or not self.valid_epoch(p): return
+            if await self.tg.protected(p['chat'],p['user']): return
+            if (await self.tg.user(p['user'])).bot: return
+            if not self.cfg.dry_run: await self.tg.delete(p['chat'],p['message'])
+            self.note(p['chat'],p['user'],'would_delete_media' if self.cfg.dry_run else 'deleted_media',
+                      'newcomer media restriction')
         elif kind == 'delete':
             if p.get('source') and not self.store.current(p['source']): return
             if not self.cfg.dry_run: await self.tg.delete(p['chat'],p['message'])

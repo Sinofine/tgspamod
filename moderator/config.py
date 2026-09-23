@@ -28,6 +28,7 @@ class Config:
     max_attempts: int = 8
     retry_seconds: float = 10
     check_unseen: bool = False
+    restrict_newcomer_media: bool = True
     exempt: set[int] = field(default_factory=set)
     group_policy: str = '禁止商业推广、拉客、诈骗和导流广告；允许正常讨论、求助、新闻引用和非推广性质的链接分享。'
     tg_proxy: dict | None = field(default=None, repr=False)
@@ -72,6 +73,7 @@ class Config:
             max_attempts=int(os.environ.get('JOB_MAX_ATTEMPTS', '8')),
             retry_seconds=float(os.environ.get('JOB_RETRY_SECONDS', '10')),
             check_unseen=boolean('CHECK_UNSEEN_MEMBERS'), exempt=ids('EXEMPT_USER_IDS'),
+            restrict_newcomer_media=boolean('RESTRICT_NEWCOMER_MEDIA', True),
             group_policy=os.environ.get('GROUP_POLICY', cls.group_policy), tg_proxy=proxy,
             llm_proxy=os.environ.get('LLM_PROXY_URL') or None)
         references = json.loads(os.environ.get('TG_CHAT_REFERENCES', '{}'))
