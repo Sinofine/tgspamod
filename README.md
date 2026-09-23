@@ -175,3 +175,13 @@ docker compose logs -f --tail=100
 ## NixOS 部署
 
 仓库内的 `telegram-moderator.nix`、`python-env.nix` 与机器人源码一起维护。部署、状态迁移和文件权限步骤见 [NIXOS.md](NIXOS.md)。Telethon 使用官方 1.45.0 wheel，避开源码包缺少 `hatch_build.py` 的构建错误。
+
+## LLM 用量日志
+
+HTTP 200 且响应为 JSON 对象时，`llm_usage` 记录审核类型、模型、输入/输出/总 token 数和输入缓存命中/未命中 token 数。支持 DeepSeek 的 `prompt_cache_hit_tokens`、`prompt_cache_miss_tokens`，并兼容 `prompt_tokens_details.cached_tokens`。缺失或非法计数字段显示 `None`，不影响审核，不把未知用量当成零；不会从缺失字段推算费用。该日志在判定校验前输出，因此格式错误而重试的模型响应也可记录其返回的用量。它表示一次接口响应，不表示审核或处罚成功。
+
+```sh
+sudo journalctl -u telegram-moderator -f -o cat | grep --line-buffered 'llm_usage'
+```
+
+输入缓存命中率为命中输入 token 数除以输入 token 总数（已知且大于零时）。是否命中、缓存计费和保留时间取决于模型服务商；程序不创建本地审核结果缓存。

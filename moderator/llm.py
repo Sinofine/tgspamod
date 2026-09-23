@@ -1,6 +1,7 @@
 import asyncio
 from dataclasses import dataclass
 import json
+import logging
 import math
 import re
 import httpx
@@ -55,7 +56,27 @@ class Classifier:
             if response.status_code != 200:
                 # Do not log provider response bodies, prompts, keys or URLs.
                 raise ReviewUnavailable(f'LLM HTTP {response.status_code}')
-            choice = response.json()['choices'][0]
+            response_data = response.json()
+            if not isinstance(response_data, dict):
+                raise ValueError('response must be an object')
+            usage = response_data.get('usage')
+            usage = usage if isinstance(usage, dict) else {}
+            details = usage.get('prompt_tokens_details')
+            details = details if isinstance(details, dict) else {}
+            def token_count(value):
+                return value if type(value) is int and value >= 0 else None
+            cache_hit = token_count(usage.get('prompt_cache_hit_tokens'))
+            if cache_hit is None:
+                cache_hit = token_count(details.get('cached_tokens'))
+            logging.getLogger('moderator').info(
+                'llm_usage kind=%s model=%s input_tokens=%s output_tokens=%s '
+                'total_tokens=%s cache_hit_tokens=%s cache_miss_tokens=%s',
+                kind, self.cfg.llm_model,
+                token_count(usage.get('prompt_tokens')),
+                token_count(usage.get('completion_tokens')),
+                token_count(usage.get('total_tokens')), cache_hit,
+                token_count(usage.get('prompt_cache_miss_tokens')))
+            choice = response_data['choices'][0]
             if choice.get('finish_reason') not in (None, 'stop'):
                 raise ReviewUnavailable('LLM unfinished/refused response')
             raw = choice['message']['content']
