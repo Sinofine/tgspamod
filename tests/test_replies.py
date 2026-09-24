@@ -78,6 +78,8 @@ class ReplyEngineTests(unittest.IsolatedAsyncioTestCase):
         async def fail(peer,mid):raise RuntimeError('unavailable')
         self.tg.reply_text=fail
         await self.e.ingest(update(text='🙂',reply_to=header()));j=self.store.claim(False)
+        while j and j['kind'] == 'profile':
+            await self.e.execute(j);self.store.finish(j);j=self.store.claim(False)
         with self.assertRaises(RuntimeError):await self.e.execute(j)
         self.store.fail(j,'unavailable',8,10)
         self.assertFalse(self.tg.calls);self.assertFalse(self.requests)

@@ -64,6 +64,32 @@ class Gateway:
     def __init__(self, client, cfg, own_id):
         self.client,self.cfg,self.own_id = client,cfg,own_id
 
+    async def publish_report(self, destination, html, random_id, message_id=None):
+        reference=int(destination) if destination.startswith('-') else destination
+        entity=await self.client.get_entity(reference)
+        if not isinstance(entity,types.Channel) or not entity.broadcast:
+            raise ValueError('Audit destination must be a broadcast channel')
+        if utils.get_peer_id(entity) in self.cfg.chats:
+            raise ValueError('Audit channel cannot be moderated')
+        peer=await self.client.get_input_entity(entity)
+        rich=types.InputRichMessageHTML(html=html,noautolink=True)
+        if message_id is not None:
+            try:
+                await self.client(functions.messages.EditMessageRequest(peer=peer,id=message_id,rich_message=rich))
+            except errors.MessageNotModifiedError:
+                pass
+            return message_id
+        result=await self.client(functions.messages.SendMessageRequest(
+            peer=peer,message='',rich_message=rich,random_id=random_id,silent=True,no_webpage=True))
+        if isinstance(result,types.UpdateShortSentMessage): return result.id
+        for update in getattr(result,'updates',[]):
+            if isinstance(update,types.UpdateMessageID) and update.random_id==random_id:return update.id
+        for update in getattr(result,'updates',[]):
+            msg=getattr(update,'message',None)
+            if isinstance(msg,types.Message) and msg.out and utils.get_peer_id(msg.peer_id)==utils.get_peer_id(entity):
+                return msg.id
+        raise RuntimeError('Sent audit message ID unavailable')
+
     async def user(self, uid):
         return await self.client.get_entity(types.PeerUser(uid))
 

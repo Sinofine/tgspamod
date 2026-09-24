@@ -16,6 +16,8 @@ class Config:
     llm_url: str
     llm_key: str = field(repr=False)
     llm_model: str
+    audit_channel: str = ''
+    audit_channel_mode: str = 'flagged'
     chat_references: dict[int, str] = field(default_factory=dict)
     data_dir: Path = Path('data')
     dry_run: bool = False
@@ -64,6 +66,8 @@ class Config:
             bot_token=required('TG_BOT_TOKEN'), chats=ids('TG_CHAT_IDS', True),
             llm_url=required('LLM_BASE_URL').rstrip('/'), llm_key=required('LLM_API_KEY'),
             llm_model=required('LLM_MODEL'), data_dir=Path(os.environ.get('DATA_DIR', 'data')),
+            audit_channel=os.environ.get('AUDIT_CHANNEL_ID','').strip(),
+            audit_channel_mode=os.environ.get('AUDIT_CHANNEL_MODE','flagged').strip(),
             dry_run=boolean('DRY_RUN'), kick_mode=os.environ.get('KICK_MODE', 'kick'),
             threshold=float(os.environ.get('AD_CONFIDENCE_THRESHOLD', '0.90')),
             llm_timeout=float(os.environ.get('LLM_TIMEOUT_SECONDS', '30')),
@@ -76,6 +80,13 @@ class Config:
             restrict_newcomer_media=boolean('RESTRICT_NEWCOMER_MEDIA', True),
             group_policy=os.environ.get('GROUP_POLICY', cls.group_policy), tg_proxy=proxy,
             llm_proxy=os.environ.get('LLM_PROXY_URL') or None)
+        if cfg.audit_channel_mode not in ('flagged','all'):
+            raise ValueError('AUDIT_CHANNEL_MODE 必须为 flagged 或 all')
+        if cfg.audit_channel:
+            if not re.fullmatch(r'(?:-100[0-9]+|@[A-Za-z][A-Za-z0-9_]{3,31})',cfg.audit_channel):
+                raise ValueError('AUDIT_CHANNEL_ID 必须为频道 -100… ID 或 @用户名')
+            if cfg.audit_channel.lstrip('-').isdigit() and int(cfg.audit_channel) in cfg.chats:
+                raise ValueError('审核频道不能同时作为受审群')
         references = json.loads(os.environ.get('TG_CHAT_REFERENCES', '{}'))
         if not isinstance(references, dict):
             raise ValueError('TG_CHAT_REFERENCES 必须是群 ID 到 @公开群用户名的 JSON 对象')

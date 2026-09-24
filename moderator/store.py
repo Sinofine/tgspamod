@@ -15,10 +15,19 @@ class Store:
         CREATE TABLE IF NOT EXISTS messages(
             chat INTEGER,user INTEGER,epoch INTEGER,message INTEGER,
             PRIMARY KEY(chat,user,epoch,message));
+        CREATE TABLE IF NOT EXISTS profile_state(
+            chat INTEGER,user INTEGER,epoch INTEGER,visible TEXT,reviewed TEXT,
+            PRIMARY KEY(chat,user,epoch));
         CREATE TABLE IF NOT EXISTS jobs(
             key TEXT PRIMARY KEY,kind TEXT,payload TEXT,revision INTEGER DEFAULT 1,
             status TEXT DEFAULT 'pending',attempts INTEGER DEFAULT 0,due REAL DEFAULT 0,
             error TEXT,created REAL,fingerprint TEXT);
+        CREATE TABLE IF NOT EXISTS channel_reports(
+            id INTEGER PRIMARY KEY, source TEXT,source_revision INTEGER,destination TEXT,
+            body TEXT,random_id INTEGER,message_id INTEGER,version INTEGER DEFAULT 1,
+            sent_version INTEGER DEFAULT 0,stale INTEGER DEFAULT 0,due REAL DEFAULT 0,
+            attempts INTEGER DEFAULT 0,failed INTEGER DEFAULT 0,error TEXT,
+            UNIQUE(source,source_revision,destination));
         CREATE TABLE IF NOT EXISTS audit(
             at REAL,chat INTEGER,user INTEGER,action TEXT,detail TEXT);
         ''')
@@ -87,6 +96,24 @@ class Store:
             return member['epoch']
         return None
 
+    def probation(self, chat, user, epoch=None):
+        member = self.member(chat,user)
+        if not member or not member['active'] or (epoch is not None and member['epoch'] != epoch): return False
+        passed = self.db.execute('SELECT count(*) FROM messages WHERE chat=? AND user=? AND epoch=? AND checked=1',
+                                 (chat,user,member['epoch'])).fetchone()[0]
+        return passed < 3
+
+    def profile_state(self, chat, user, epoch):
+        return self.db.execute('SELECT * FROM profile_state WHERE chat=? AND user=? AND epoch=?',
+                               (chat,user,epoch)).fetchone()
+
+    def set_profile_state(self, chat, user, epoch, field, value):
+        if field not in ('visible','reviewed'): raise ValueError('invalid profile field')
+        self.db.execute('INSERT OR IGNORE INTO profile_state(chat,user,epoch) VALUES(?,?,?)',(chat,user,epoch))
+        self.db.execute(f'UPDATE profile_state SET {field}=? WHERE chat=? AND user=? AND epoch=?',
+                        (value,chat,user,epoch))
+        self.db.commit()
+
     def has_job(self, key):
         return self.db.execute('SELECT 1 FROM jobs WHERE key=?',(key,)).fetchone() is not None
 
@@ -104,6 +131,8 @@ class Store:
         else:
             self.db.execute('INSERT INTO jobs(key,kind,payload,created,fingerprint) VALUES(?,?,?,?,?)',
                             (key,kind,body,time.time(),fingerprint))
+        self.db.execute('''UPDATE channel_reports SET stale=1,version=version+1,due=0,failed=0,attempts=0
+            WHERE source=? AND source_revision<>(SELECT revision FROM jobs WHERE key=?) AND stale=0''',(key,key))
         self.db.commit()
         return True
 
@@ -151,5 +180,7 @@ class Store:
 
     def retry_failed(self):
         cursor = self.db.execute("UPDATE jobs SET status='pending',attempts=0,due=0 WHERE status='failed'")
+        count=cursor.rowcount
+        count+=self.db.execute('UPDATE channel_reports SET failed=0,attempts=0,due=0 WHERE failed=1').rowcount
         self.db.commit()
-        return cursor.rowcount
+        return count

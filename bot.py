@@ -41,6 +41,8 @@ async def run(cfg):
         # Independent action worker cannot get stuck waiting for an LLM semaphore.
         tasks = [asyncio.create_task(engine.worker()) for _ in range(cfg.llm_concurrency)]
         tasks.append(asyncio.create_task(engine.worker(actions=True)))
+        if cfg.audit_channel:
+            tasks.append(asyncio.create_task(engine.channel_log.worker()))
         tasks.append(asyncio.create_task(bootstrap.watch()))
         disconnected = asyncio.create_task(client.run_until_disconnected())
         tasks.append(disconnected)
